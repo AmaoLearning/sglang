@@ -299,7 +299,7 @@ Relevant parameters:
 
 ```bash
 python3 -m sglang.launch_server \
-    --model Qwen/Qwen2.5-7B-Instruct \
+    --model Qwen/Qwen2.5-0.5B-Instruct \
     --speculative-algorithm STANDALONE \
     --speculative-draft-model-path Qwen/Qwen2.5-1.5B-Instruct \
     --speculative-num-steps 4 \
@@ -318,7 +318,7 @@ import openai
 client = openai.Client(base_url="http://127.0.0.1:30000/v1", api_key="None")
 
 response = client.chat.completions.create(
-    model="Qwen/Qwen2.5-7B-Instruct",
+    model="Qwen/Qwen2.5-0.5B-Instruct",
     messages=[
         {"role": "user", "content": "List 3 countries and their capitals."},
     ],
@@ -346,7 +346,7 @@ Notes:
 
 ```bash
 SGLANG_ENABLE_SPEC_V2=True python3 -m sglang.launch_server \
-    --model Qwen/Qwen2.5-7B-Instruct \
+    --model Qwen/Qwen2.5-0.5B-Instruct \
     --speculative-algorithm STANDALONE \
     --speculative-draft-model-path Qwen/Qwen2.5-1.5B-Instruct \
     --speculative-num-steps 4 \
@@ -365,7 +365,7 @@ import openai
 client = openai.Client(base_url="http://127.0.0.1:30000/v1", api_key="None")
 
 response = client.chat.completions.create(
-    model="Qwen/Qwen2.5-7B-Instruct",
+    model="Qwen/Qwen2.5-0.5B-Instruct",
     messages=[
         {"role": "user", "content": "List 3 countries and their capitals."},
     ],
@@ -405,7 +405,7 @@ Notes:
 
 ```bash
 python3 -m sglang.launch_server \
-    --model Qwen/Qwen2.5-7B-Instruct \
+    --model Qwen/Qwen2.5-0.5B-Instruct \
     --speculative-algorithm NGRAM \
     --speculative-num-draft-tokens 16 \
     --speculative-ngram-max-bfs-breadth 10 \
@@ -422,7 +422,7 @@ import openai
 client = openai.Client(base_url="http://127.0.0.1:30000/v1", api_key="None")
 
 response = client.chat.completions.create(
-    model="Qwen/Qwen2.5-7B-Instruct",
+    model="Qwen/Qwen2.5-0.5B-Instruct",
     messages=[
         {"role": "user", "content": "List 3 countries and their capitals."},
     ],

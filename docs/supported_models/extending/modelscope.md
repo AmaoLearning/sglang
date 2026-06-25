@@ -22,7 +22,7 @@ docker run --gpus all \
     --env "SGLANG_USE_MODELSCOPE=true" \
     --ipc=host \
     lmsysorg/sglang:latest \
-    python3 -m sglang.launch_server --model-path Qwen/Qwen2.5-7B-Instruct --host 0.0.0.0 --port 30000
+    python3 -m sglang.launch_server --model-path Qwen/Qwen2.5-0.5B-Instruct --host 0.0.0.0 --port 30000
 ```
 
 Note that modelscope uses a different cache directory than huggingface. You may need to set it manually to avoid running out of disk space.

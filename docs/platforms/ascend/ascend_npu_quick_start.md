@@ -52,7 +52,7 @@ export HF_TOKEN=<secret>
 
 # Start SGLang server
 # It may take several minutes to download the model on the first run
-sglang serve --model-path Qwen/Qwen2.5-7B-Instruct --attention-backend ascend &
+sglang serve --model-path Qwen/Qwen2.5-0.5B-Instruct --attention-backend ascend &
 ```
 
 If you see output like the following, the server is running.

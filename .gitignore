@@ -190,6 +190,8 @@ tl_out/
 # personnal
 work_dirs/
 *.csv
+/models/
+python/*.toml
 
 !logo.png
 !docs_new/images/*.png
