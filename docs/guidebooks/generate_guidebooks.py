@@ -45,11 +45,32 @@ def code(source: str) -> dict:
 
 
 CALL_EXPLANATIONS = {
+    "suppress_noisy_warnings": "启动入口先压掉第三方库的已知噪声 warning，让真正的启动错误更容易被看到。",
+    "launch_server": "`run_server` 的默认 HTTP/SRT 路径；真正的 manager 子进程装配在 `http_server.launch_server` 里完成。",
+    "serve_grpc_encoder": "encoder-only + gRPC 的专用服务路径，用于 embedding/encoder 类模型而不是普通生成式 HTTP server。",
+    "serve_grpc": "普通生成模型的 gRPC 服务路径；它绕开默认 FastAPI/uvicorn HTTP 入口。",
+    "run_expert_backup_manager": "启动 DeepEP MoE expert 备份管理器，只在启用 expert distribution recorder 且当前节点需要维护冗余专家时运行。",
+    "launch_dummy_health_check_server": "非 0 rank 不承载完整 HTTP API 时仍暴露健康检查端口，方便外部编排系统判断子节点存活。",
+    "configure_logger": "按 server args 配置 SRT 进程日志；这一步发生在子进程启动前，保证 scheduler/detokenizer 日志格式一致。",
+    "_set_envs_and_config": "把 server args 转成运行时环境变量和全局配置，后续 model runner、通信库和 cache 逻辑会读取这些开关。",
+    "_set_gc": "按 server args 调整 Python GC 行为，避免长生命周期服务在请求热路径上频繁触发不可控 GC pause。",
+    "resolve_auto_parsers": "在 scheduler 启动前解析 `reasoning_parser/tool_call_parser=auto`，让 tokenizer/template 侧不用再猜 parser 类型。",
+    "cls._launch_scheduler_processes": "启动 scheduler/model worker 进程；模型加载、TP/DP 通信组和 scheduler capability 都从这里产生。",
+    "cls._launch_detokenizer_subprocesses": "启动 detokenizer 进程，把 token id 到文本的 CPU 工作从 scheduler 中拆出去。",
+    "MultiTokenizerRouter": "多 tokenizer worker 模式下的主进程路由器；HTTP worker 的请求不会直接共用单个 TokenizerManager。",
+    "scheduler_init_result.all_child_pids.append": "把 detokenizer 子进程 PID 纳入 scheduler 初始化结果，后续 watchdog/清理逻辑才能统一管理。",
+    "processes.extend": "把 detokenizer 进程追加到 watchdog 监控集合，主进程会同时观察 scheduler 与 detokenizer。",
+    "names.extend": "给 watchdog 中新增的 detokenizer 进程补上可读名称，崩溃日志能指出是哪类子进程失败。",
+    "subprocess_watchdog.start": "启动后台 watchdog 线程，子进程异常退出会被主进程发现并转成服务级故障。",
     "Engine._launch_subprocesses": "启动并连接 SRT engine 的内部组件，返回 manager、IPC 端口、scheduler 初始化信息和 watchdog。",
     "_setup_and_run_http_server": "把已经启动的 engine 组件挂到 FastAPI app 上，并启动 HTTP server。",
     "set_global_state": "把 manager/template/scheduler 信息放入 HTTP 全局状态，endpoint 之后通过它拿到 runtime 对象。",
+    "_GlobalState": "HTTP 全局状态对象；FastAPI endpoint 后续通过它拿 tokenizer manager、template manager 和 scheduler info。",
     "write_data_for_multi_tokenizer": "多 tokenizer worker 模式下通过共享内存传递启动参数。",
     "add_api_key_middleware": "把 API key/admin API key 鉴权逻辑注册到 FastAPI middleware。",
+    "add_prometheus_track_response_middleware": "在 FastAPI 层增加 response metrics middleware，使 HTTP 请求耗时和状态码进入 Prometheus 指标。",
+    "app_has_admin_force_endpoints": "检查当前 FastAPI app 是否暴露强制类管理 endpoint；有这类 endpoint 时必须打开 admin key 校验。",
+    "set_uvicorn_logging_configs": "把 SGLang 的日志配置同步给 uvicorn，避免 HTTP server 使用另一套默认日志格式。",
     "uvicorn.run": "启动默认 ASGI HTTP server，真正开始监听请求。",
     "_run_granian_server": "启动 Granian HTTP/2 server，是 HTTP/2 路径的替代 server backend。",
     "PortArgs.init_new": "分配 tokenizer/scheduler/detokenizer 之间 IPC 通信所需的端口或 socket 名称。",
@@ -57,6 +78,9 @@ CALL_EXPLANATIONS = {
     "server_args.check_server_args": "在进程启动前做参数一致性校验，避免子进程启动后才失败。",
     "scheduler_init_result.wait_for_ready": "等待 scheduler/model worker 完成初始化并回传可服务状态。",
     "SubprocessWatchdog": "监控 scheduler/detokenizer 子进程存活，避免主进程静默挂着坏服务。",
+    "start_cpu_monitor_thread": "为 tokenizer/detokenizer 进程启动 CPU 监控线程，便于定位 CPU 侧预处理或 detokenize 阻塞。",
+    "configure_gc_warning": "启用 GC pause 告警；tokenizer manager 是长生命周期进程，GC 卡顿会直接影响请求入站延迟。",
+    "Watchdog.create": "为 tokenizer manager 创建软 watchdog，用于发现 handle loop 或请求处理长时间无进展。",
     "TypeBasedDispatcher": "按返回对象类型分发处理函数，减少 tokenizer manager 中的 if/else 回包分支。",
     "self.init_communicators": "初始化 tokenizer manager 与 scheduler/detokenizer 间的 IPC 通道。",
     "obj.normalize_batch_and_arguments": "把单请求/批请求和参数别名规范化，后续路径才能统一处理。",
@@ -66,15 +90,30 @@ CALL_EXPLANATIONS = {
     "self._send_one_request": "把 tokenized request 通过 IPC 发给 scheduler。",
     "self._wait_one_response": "等待 scheduler/detokenizer 回包，并按 streaming/non-streaming 产出 API 响应。",
     "self._handle_batch_output": "把 batch 输出拆回每个 rid，并整理 meta_info、文本、logprob、finish reason。",
+    "self._attach_multi_http_worker_info": "多 tokenizer worker 模式下给请求补充 HTTP worker IPC 信息，scheduler 回包才能路由回正确 worker。",
+    "self._handle_epd_disaggregation_encode_request": "EPD language-only encode 请求的旁路处理；这种请求不进入普通生成式 decode 流程。",
+    "self.request_logger.log_received_request": "在请求刚完成规范化后记录输入摘要，便于把用户请求和后续 scheduler 日志串起来。",
+    "self._validate_and_resolve_lora": "在 tokenization 前解析并校验 LoRA 选择，确保 cache key 和调度状态带上正确 LoRA 维度。",
+    "self.recv_from_detokenizer.recv_pyobj": "从 detokenizer IPC 通道收回 batch 输出或控制对象，这是响应回到 API 层的入口。",
+    "self._result_dispatcher": "处理非 batch-output 的控制消息，例如 abort、flush cache、profile 等 manager 间响应。",
+    "self.convert_logprob_style": "把 scheduler 返回的 logprob token 信息转换成用户 API 请求的文本/token 风格。",
+    "template_manager.initialize_templates": "根据 tokenizer 和 server args 初始化 chat/completion template，并顺带推断 reasoning/tool parser。",
     "get_zmq_socket": "创建 ZeroMQ socket，是 manager 进程之间传对象的底层通道。",
     "get_tokenizer": "加载 Hugging Face 或自定义 tokenizer，供 detokenization 或模板处理使用。",
     "key.page_aligned": "把 key 截到 page 边界，保证命中的 KV span 能被 page allocator 安全复用。",
     "self._match_prefix_helper": "沿 radix tree 递归寻找最长已缓存前缀。",
     "self._split_node": "当匹配在节点中间结束时拆节点，给未来请求留下精确边界。",
+    "key.maybe_to_bigram_view": "EAGLE 路径会把 token 序列按 bigram 视图解释，prefix cache 需要用同一套 key 语义匹配 draft/target KV。",
     "tree_cache.match_prefix": "查询 prefix cache，把可复用 KV slot 和节点锚点返回给 scheduler。",
     "zero_match_result": "把一次命中强制归零，常用于调试或禁用 radix 命中的实验。",
     "match_prefix_for_req": "把 cache 命中结果写回 Req，供排序和 KV 分配使用。",
     "ForwardBatch.init_new": "把 scheduler 的 CPU 侧 batch 状态转换为 model runner/attention backend 使用的 tensor 元数据。",
+    "self.request_receiver.recv_requests": "scheduler 从 tokenizer manager 拉取新请求和控制消息，每轮调度都先消费这个入口。",
+    "self.process_input_requests": "把新请求、abort、flush、update weight 等控制消息并入 scheduler 内部队列。",
+    "self.get_next_batch_to_run": "在 running batch 和 waiting queue 之间选择下一批可执行请求，是 continuous batching 的调度入口。",
+    "self.on_idle": "scheduler 无 batch 可跑时执行空闲维护，例如健康检查、状态重置或等待新请求。",
+    "self._apply_war_barrier": "overlap 调度里处理 write-after-read 依赖屏障，避免上一轮 GPU 结果尚未安全发布就复用资源。",
+    "self.is_disable_overlap_for_batch": "检查当前 batch 是否因 grammar/spec/特殊 forward mode 等原因不能和上一批重叠执行。",
     "self.recv_requests": "从 tokenizer manager 接收新请求和控制消息。",
     "self.get_new_batch_prefill": "从 waiting queue 选择下一批可进入 prefill/extend 的请求。",
     "self.run_batch": "调用 model worker 执行当前 batch，并返回采样/forward 结果。",
@@ -100,15 +139,247 @@ CALL_EXPLANATIONS = {
     "self.cache_controller.prefetch": "发起从 L3 storage 到 host pool 的异步预取。",
     "self.cache_controller.terminate_prefetch": "结束预取并返回实际完成 token 数。",
     "self.evict_host": "从 host KV pool 中驱逐页面，为新的 load-back/prefetch 腾空间。",
-    "logging.getLogger": "取得当前模块的 logger；日志名通常跟 `__name__` 绑定，便于按模块过滤。",
-    "dataclasses.field": "为 dataclass 字段指定 default factory、metadata 或 init 行为。",
-    "os.getenv": "读取环境变量开关；这类分支常用于调试、实验功能或部署差异。",
-    "torch.empty": "预分配 tensor 存储，后续 kernel 或 copy 会填充真实内容。",
-    "torch.zeros": "分配并清零 tensor，常用于 mask、计数器或初始化状态。",
-    "torch.tensor": "把 Python/NumPy 数据转换成 Torch tensor，进入模型执行或通信路径。",
-    "asyncio.create_task": "把协程放到事件循环后台执行，调用方不会同步等待它完成。",
-    "copy.copy": "创建浅拷贝；对象内部可变成员仍可能共享，读状态生命周期时要留意。",
-    "copy.deepcopy": "创建深拷贝；常用于每请求状态隔离，避免复用缓存对象时串状态。",
+    "self.scripted_scheduler_hook.on_run_batch": "测试/脚本 hook 可在每次 batch 执行前观察或修改 batch，用于调度实验和可控复现。",
+    "self.profiler_manager._profile_batch_predicate": "按当前 batch 决定是否启动 profiler，避免对所有请求都付 profiling 开销。",
+    "self._run_batch_prebuilt": "PD disaggregation decode 可以直接使用预构建 batch，绕过普通 scheduler 现场组装路径。",
+    "self.future_map.resolve_seq_lens_cpu": "overlap 模式下先解析 speculative future indices 对 seq_lens 的影响，保证 CPU 调度看到正确长度。",
+    "resolve_forward_inputs": "把 ScheduleBatch 中的 CPU staging 输入解析成 model worker 可消费的 forward 输入。",
+    "self._forward_isolation": "overlap forward 前建立 batch 状态隔离，防止 worker 修改污染 scheduler 下一轮准备。",
+    "self.future_map.publish": "overlap/speculative 路径把可见 seq_lens 发布给调度线程，使下一轮 CPU 准备可提前进行。",
+    "self.model_worker.forward_batch_generation": "进入 TP model worker 执行生成 forward；attention backend、sampling 和 logits 处理从这里往下发生。",
+    "req.set_finish_with_abort": "把 grammar 编译不可用或非法 schema 转成请求级 abort，scheduler 后续会把它作为已结束请求处理。",
+    "self._apply_request_reasoning_budget": "把 strict thinking/reasoning budget 写入 grammar object，使 reasoning token 数受同一套 token filter 约束。",
+    "self.grammar_queue.append": "grammar Future 未完成时请求先留在 grammar_queue，不能进入普通 waiting queue。",
+    "self.matcher.accept_token": "把采样出的 token 推进 xgrammar matcher；如果 matcher 拒绝，说明 logits mask 或 retokenize 状态已经不一致。",
+    "self.matcher.rollback": "撤回 matcher 的最近 k 个 token，供 speculative reject 或 jump-forward retokenize 后重放。",
+    "self.matcher.is_terminated": "查询 grammar 是否已到终止状态，终止后不再推进 token mask。",
+    "vocab_mask.to": "把 CPU 侧 token bitmask 异步搬到 logits 所在设备，采样前 mask kernel 才能直接读取。",
+    "GrammarCompiler": "用 tokenizer token 边界构建 xgrammar compiler；后续 JSON/regex/EBNF 都依赖它生成 compiled grammar。",
+    "TokenizerInfo.from_huggingface": "把 Hugging Face tokenizer 转成 xgrammar 可用的 token 信息，并显式使用模型 EOS 作为 stop token。",
+    "get_mha_host_pool_cls": "根据 GPU KV pool 类型选择对应 host pool 布局，HiCache L2 必须和 device KV layout 对齐。",
+    "MLATokenToKVPoolHost": "为 MLA KV cache 创建 host 侧镜像池，布局不同于普通 MHA host pool。",
+    "self._parse_storage_backend_extra_config": "解析 L3 storage backend 的额外配置，得到预取阈值、超时策略和 prefix-key 传递策略。",
+    "attach_hybrid_dsa_pool_to_hiradix_cache": "DSA KV layout 需要专门的 hybrid host pool/controller 装配，不能走普通 MHA/MLA 分支。",
+    "HiCacheController": "创建 HiCache 的异步传输控制器，统一管理 device<->host 写回、L3 预取和 ACK 队列。",
+    "self._apply_storage_runtime_config": "把 storage backend、阈值、超时和 metrics 配置写入 HiRadixCache 运行时状态。",
+}
+
+
+BRANCH_EXPLANATIONS = {
+    "server_args.encoder_only": "encoder-only 服务只处理 embedding/encoder 类请求；不会启动普通生成式 HTTP runtime。",
+    "server_args.grpc_mode": "选择 gRPC 协议入口，绕过默认 FastAPI/uvicorn endpoint。",
+    "server_args.use_ray": "Ray serving 使用分布式 actor 拓扑，启动路径不再由本进程直接装配 SRT 子进程。",
+    "port_args is None": "外部没有传入 IPC 端口时，由 engine 自己为 tokenizer/scheduler/detokenizer 分配通信端点。",
+    "server_args.node_rank == 0": "多节点部署中只有 rank0 负责启动 engine info bootstrap server，给其他节点同步 scheduler 信息。",
+    "server_args.reasoning_parser == \"auto\"": "reasoning parser 自动推断需要在 tokenizer/template 初始化前先解析，避免后续请求阶段才发现 parser 未定。",
+    "server_args.node_rank >= 1": "非 0 节点只承载 scheduler/model worker，不启动 tokenizer/detokenizer 和完整 HTTP API。",
+    "server_args.tokenizer_worker_num == 1": "单 tokenizer worker 模式下主进程直接持有 TokenizerManager；多 worker 模式改用共享内存和 router。",
+    "server_args.enable_metrics": "启用 metrics 时 HTTP 层会注入 Prometheus middleware，scheduler/cache 侧也会带指标 collector。",
+    "server_args.ssl_certfile": "提供证书时 uvicorn/granian 走 HTTPS 配置；这里仅记录 SSL 文件，实际监听仍在后续 server backend。",
+    "server_args.enable_http2": "HTTP/2 需要 Granian backend；默认 uvicorn 路径只覆盖普通 HTTP/1.1 ASGI 服务。",
+    "self.server_args.gc_warning_threshold_secs > 0.0": "只有显式设置 GC 阈值时 tokenizer manager 才打开 GC pause 告警，避免默认日志过多。",
+    "server_args.skip_tokenizer_init": "跳过 tokenizer 初始化时 detokenizer 不做 token-id 到文本转换，适用于 embedding/token-id-only 等路径。",
+    "self.server_args.tokenizer_worker_num > 1": "多 tokenizer worker 请求必须附带 worker IPC 信息，否则 scheduler 输出无法回到发起请求的 HTTP worker。",
+    "self.server_args.language_only": "language-only/EPD encode 请求走 disaggregation encode 旁路，不进入普通 generate decode 流程。",
+    "obj.is_single": "单请求直接 tokenize/send/wait；批请求要拆分内部 request state 并复用 batch handler。",
+    "obj.return_prompt_token_ids": "用户要求返回 prompt token id 时，tokenization 结果需要暂存在 ReqState 里供最终响应组装。",
+    "state is None": "收到的 rid 已不在 `rid_to_state`，通常是请求已 abort/health check 已提前清理，需要避免把孤儿输出写回用户流。",
+    "rid.startswith(HEALTH_CHECK_RID_PREFIX)": "health check 请求可能只等任意回包更新时间戳，rid 已清理时静默跳过是预期竞争。",
+    "self.enable_metrics": "开启 metrics 时把 scheduler 侧 time_stats 合并进 API meta_info，用户响应才带性能分解。",
+    "recv_obj.time_stats is not None": "只有 scheduler 返回了 per-request timing 时，tokenizer manager 才能把它转换成输出 meta_info。",
+    "getattr(state.obj, \"return_logprob\", False)": "用户请求 logprob 时，tokenizer manager 需要把 token id/logprob 转成 OpenAI/SGLang API 风格。",
+    "not isinstance(recv_obj, BatchEmbeddingOutput)": "embedding 输出没有生成文本 finish 语义，文本生成相关 meta_info 只加到非 embedding 响应。",
+    "getattr(server_args, attr) != \"auto\"": "用户显式指定 parser 时不覆盖；只有 auto 才使用 template manager 的推断结果。",
+    "suggested is not None": "template manager 成功从 chat template 推断 parser，就把 auto 改写成具体 parser 名称。",
+    "self.gracefully_exit": "scheduler 收到优雅退出信号后跳出主循环，不再接收新 batch。",
+    "self._engine_paused": "engine pause 时只接收控制消息，不继续组 batch 或调用 model worker。",
+    "python/sglang/srt/managers/scheduler.py:batch": "存在可运行 batch 时进入 GPU forward；没有 batch 时进入 idle 维护路径。",
+    "envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get()": "调试内存泄漏时在 busy loop 中强制检查 KV pool/radix cache 不变量，生产默认关闭。",
+    "self.is_bigram": "bigram 视图下一个逻辑 key 单元对应相邻 token 对，切片需要保留右边界 token 才能组成完整 bigram。",
+    "page_size == 1": "page size 为 1 时无需对齐，prefix hit 可以精确到任意 token。",
+    "is_eagle and not self.is_bigram": "EAGLE 使用 bigram prefix 语义；第一次进入该路径时把 key 视图切换为 bigram 而不复制 token 数组。",
+    "value is not None": "Radix key 变短或变成 bigram 后，KV index/value 必须裁到同样逻辑长度，防止 tree key 与 value 长度不一致。",
+    "self.extra_key != other.extra_key": "`extra_key` 不同代表 LoRA/cache salt/隔离域不同，即使 token 相同也不能复用同一段 KV。",
+    "self.disable or len(key) == 0": "prefix cache 被禁用或 key 为空时直接返回空命中，scheduler 会按无 cache 路径处理。",
+    "len(key) == 0": "page 对齐后可能没有完整 page 可复用，此时不能返回部分 page 的 KV index。",
+    "python/sglang/srt/mem_cache/radix_cache.py:value": "radix helper 返回多个节点的 KV span；有命中时需要拼成连续 device index 交给 scheduler。",
+    "self.disable": "禁用 radix cache 时 finished request 的 KV 不进入 tree，需要直接释放 KV slot。",
+    "self.disable_finished_insert": "确定性/调试模式可禁止 finished request 写入 radix tree，用于避免 cache 影响复现实验。",
+    "is_insert": "只有允许插入时才把 finished request 的 committed KV 提升为可复用 prefix cache。",
+    "token_ids is None": "调用方不传 token_ids 时，默认用 prompt + 已生成 token 作为 prefix matching key。",
+    "envs.SGLANG_RADIX_FORCE_MISS.get()": "强制 cache miss 的实验开关，用于对比 radix cache 对性能或正确性的影响。",
+    "not isinstance(policy, CacheAwarePolicy)": "即使当前排序策略不按 cache 排序，SGLang 也可能预先计算 prefix hit 供后续 load/snapshot 使用。",
+    "self.policy == CacheAgnosticPolicy.FCFS": "FCFS 不看 prefix cache；若开启 priority scheduling，只在到达顺序基础上加入用户优先级。",
+    "isinstance(policy, CacheAwarePolicy)": "cache-aware policy 会先把 waiting queue 的 prefix 命中写回 Req，再用 LPM/DFS 权重排序。",
+    "policy == CacheAwarePolicy.LPM": "LPM 策略优先最长 prefix hit 的请求，让即将进入 prefill 的 batch 更可能复用已有 KV。",
+    "policy == CacheAwarePolicy.DFS_WEIGHT": "DFS weight 策略按 radix tree 局部性排序，目标是让相邻请求复用相近 cache 分支。",
+    "policy == CacheAgnosticPolicy.LOF": "LOF 关注输出长度而不是 cache hit，适合不想让 prefix cache 影响公平性的策略。",
+    "thinking_budget is None": "该请求没有 strict thinking 预算，grammar manager 不需要给 ReasonerGrammarObject 写 budget。",
+    "isinstance(req.grammar, ReasonerGrammarObject)": "只有 reasoning grammar 才需要写 `max_think_tokens`；普通 JSON/regex grammar 不消费 thinking budget。",
+    "self.grammar_backend is None": "用户请求 structured output 但服务以 `--grammar-backend none` 启动，只能立即 abort 该请求。",
+    "req.sampling_params.json_schema is not None": "JSON schema 约束优先生成 grammar cache key，同一 schema 后续请求可复用编译结果。",
+    "req.sampling_params.regex is not None": "regex 约束使用 `('regex', pattern)` 作为 cache key，与 JSON/EBNF 编译结果隔离。",
+    "req.sampling_params.ebnf is not None": "EBNF 约束使用独立 cache key，避免和 regex/JSON 的 compiled grammar 混用。",
+    "req.sampling_params.structural_tag": "structural tag 走同一 grammar cache/Future 管线，但 key 类型与 JSON/regex/EBNF 分开。",
+    "not cache_hit": "grammar cache miss 返回 Future，请求必须进入 grammar_queue 等待编译完成。",
+    "self._enable_strict_thinking": "没有显式 structured output 时，strict thinking 仍会初始化 reasoning grammar 来约束思考段 token。",
+    "grammar_obj is not None": "strict thinking backend 成功创建 grammar 后，把它挂到 Req，后续 sampling 会应用 token filter。",
+    "add_to_grammar_queue": "只有 grammar 编译 Future 未完成的请求才进入 grammar_queue；cache hit 可以直接进 scheduler waiting queue。",
+    "i in ready_req_idxs": "同一轮 polling 已判定 ready 的请求不重复检查，避免重复访问 Future 状态。",
+    "req.finished() or req.grammar is None": "请求等待 grammar 时可能被 abort；这种请求应从 grammar_queue 移走而不是继续等 Future。",
+    "req.grammar.done()": "grammar 编译 Future 完成后，请求可以从 grammar_queue 转回普通 waiting queue。",
+    "self.grammar_sync_size == 1": "单 rank 不需要 all-gather，直接使用本地 ready/failed 集合。",
+    "logits.device.type in {\"cuda\", \"xpu\", \"musa\"}": "GPU/XPU/MUSA logits 走设备侧 bitmask kernel，避免把 logits 拉回 CPU。",
+    "_is_hip": "ROCm/HIP 环境使用 CUDA 兼容实现；非 HIP GPU 默认走 Triton bitmask kernel。",
+    "logits.device.type == \"npu\"": "NPU 后端使用 sgl-kernel-npu 注册的 token bitmask op。",
+    "s": "xgrammar 找到确定性 jump-forward 字符串时，可以跳过逐 token decode 再 retokenize。",
+    "hasattr(tokenizer, \"init_xgrammar\")": "自定义 tokenizer 可以提供专门的 xgrammar 初始化，绕开 Hugging Face TokenizerInfo 转换。",
+    "tokenizer_info is None": "自定义 tokenizer 明确表示不支持 xgrammar 时，backend 初始化失败并回退到错误路径。",
+    "isinstance(self.kv_cache, MHATokenToKVPool)": "普通 MHA KV cache 使用与 device pool 匹配的 host pool，支持 L2 写回/加载。",
+    "isinstance(self.kv_cache, DSATokenToKVPool)": "DSA cache 需要等解析 storage extra_config 后走 hybrid attach，不能在这里直接创建 host pool。",
+    "isinstance(self.kv_cache, MLATokenToKVPool)": "MLA KV cache 使用专门 host pool，因为 MLA 的 KV layout 与普通 MHA 不同。",
+    "self.scripted_scheduler_hook is not None": "存在脚本化 scheduler hook 时，每个 batch 执行前都给实验代码一个观察/干预点。",
+    "self.forward_sleep_time is not None": "调试用人为 sleep，可放大并发/overlap 时序问题，生产路径不应开启。",
+    "batch.forward_mode.is_prebuilt()": "prebuilt batch 来自 disaggregation decode 等外部构造路径，scheduler 不再按普通 batch 重新准备输入。",
+    "self.is_generation": "生成模型走 token generation forward；embedding/score 等非生成任务会走 run_batch 的其他分支。",
+    "self.enable_overlap": "overlap 开启时 CPU 调度和 GPU forward 分离，需要 future_map、stream wait 和状态隔离配合。",
+    "not batch.spec_algorithm.is_none()": "speculative batch 需要在 target verify 与 draft extend 之间提前 publish，给 scheduler overlap 留窗口。",
+    "batch.spec_algorithm.is_none()": "非 speculative batch 没有 draft 后续工作，model worker 返回后再发布 seq_lens 即可。",
+}
+
+
+ASSIGNMENT_EXPLANATIONS = {
+    "tokenizer_manager.max_req_input_len": "scheduler 初始化后回传真实 max input length；tokenizer manager 后续用它做入站长度校验。",
+    "app.is_single_tokenizer_mode": "HTTP lifecycle 通过这个标志区分单 tokenizer 与多 tokenizer worker 的 warmup/路由路径。",
+    "app.server_args": "single-tokenizer 模式把 server args 挂到 FastAPI app，lifespan/warmup 线程直接读取它。",
+    "app.warmup_thread_kwargs": "HTTP server lifespan 会用这些参数执行 warmup，保证监听后模型路径已经完成必要预热。",
+    "self._result_dispatcher": "TokenizerManager 的回包分发器；scheduler/detokenizer 返回的控制对象按类型进入对应 handler。",
+    "self.sampling_params_class": "请求入站时使用的采样参数实现，后续会把用户 JSON 规范化为内部 SamplingParams。",
+    "self.signal_handler_class": "TokenizerManager 使用的信号处理器类型，负责把进程信号转成服务清理动作。",
+    "self.recv_from_scheduler": "detokenizer 的输入 IPC socket；scheduler 把 token id/batch output 发到这里。",
+    "self.send_to_tokenizer": "detokenizer 的输出 IPC socket；单 tokenizer 模式下文本增量通过它回到 TokenizerManager。",
+    "self.tokenizer": "detokenizer 持有 tokenizer 后才能把增量 token id 解码成文本；skip 模式则保持 None。",
+    "dp_size": "DP size 决定 routed_dp_rank 是否有效；单 DP 时 routed_dp_rank=0 会被忽略。",
+    "tokenized_obj": "单请求完成 tokenizer/chat template/multimodal 处理后的内部请求对象，下一步会通过 IPC 发送给 scheduler。",
+    "state.prompt_token_ids": "用户要求回传 prompt token ids 时，把 tokenization 结果挂到 ReqState，最终响应组装会读取它。",
+    "recv_obj": "TokenizerManager 从 detokenizer 收到的 batch 输出或控制对象，是 API streaming/non-streaming 回包的来源。",
+    "pending_notify": "批量通知暂存表，用于减少逐请求唤醒造成的 event-loop 抖动。",
+    "batch_notify_size": "控制一次合并通知多少请求，影响 streaming 高并发下的唤醒粒度。",
+    "state": "`rid_to_state` 中的请求等待状态；找到它才能把 scheduler 输出送回对应 API coroutine。",
+    "meta_info": "用户响应中的元信息在 tokenizer manager 组装，包含 finish reason、prompt token 数和可选 timing/logprob。",
+    "scheduler_time_stats": "scheduler 返回的 per-request 执行耗时，稍后会转换为输出 meta_info。",
+    "tokenizer_manager": "主进程中的 TokenizerManager，负责 API 入站、tokenization 和等待 scheduler/detokenizer 回包。",
+    "template_manager": "chat/completion 模板管理器，初始化后还会给 auto parser 提供推断结果。",
+    "TokenizerManagerClass": "测试或私有 fork 可以替换 TokenizerManager 实现；默认使用标准 TokenizerManager。",
+    "self.cur_batch": "scheduler 当前正在执行/准备执行的 batch；abort、pause、metrics 等逻辑会读取它。",
+    "self.last_batch": "记录上一轮 batch，overlap/metrics/调试路径会用它理解上一轮执行状态。",
+    "recv_reqs": "scheduler 本轮从 tokenizer manager 收到的新请求和控制消息。",
+    "python/sglang/srt/managers/scheduler.py:batch": "scheduler 本轮选择出的可执行 batch，可能来自 running decode 或 waiting prefill。",
+    "result": "model worker forward/sampling 的输出，下一步必须交给 `process_batch_result` 更新请求和 cache 状态。",
+    "self.result_queue": "overlap 调度暂存上一轮 GPU 结果，使 CPU 可以先准备下一轮 batch 再回收上一轮输出。",
+    "tmp_batch, tmp_result": "overlap 路径中出队的上一轮结果，必须先 process 后才能安全推进相关请求状态。",
+    "disable_overlap_for_batch": "某些 batch 因依赖或特殊 feature 不能 overlap，这个标志决定是否立即处理上一轮结果。",
+    "self.token_ids": "RadixKey 持有的 token 序列，是 radix tree 边上的实际匹配内容。",
+    "self.extra_key": "RadixKey 的隔离维度；LoRA、cache salt 或租户隔离不同就不能共享 KV。",
+    "self.is_bigram": "标记当前 key 是否按 bigram 逻辑解释，主要服务 EAGLE/speculative 路径。",
+    "aligned_len": "向下对齐到 page 边界后的可复用 token 数，避免返回半个 KV page。",
+    "raw": "bigram 切片需要包含 stop 右侧 token，才能让最后一个 bigram 单元完整。",
+    "python/sglang/srt/mem_cache/radix_cache.py:key": "prefix cache 查找/插入使用的 RadixKey；它同时包含 token ids 和 extra_key 隔离域。",
+    "python/sglang/srt/mem_cache/radix_cache.py:value": "与 RadixKey 对应的 KV slot indices；tree 命中后 scheduler 会复用这些 device slots。",
+    "prefix_len, last_node": "insert helper 返回已有 prefix 长度和最终节点，调用方据此更新 cache metadata。",
+    "kv_committed_len": "请求已经确认可提交的 KV 长度，只有这部分 KV 能进入 prefix cache 或被安全释放。",
+    "kv_indices": "req-to-token pool 中的物理 KV slot 索引，把请求 token 位置映射到实际 KV 存储。",
+    "radix_key": "finished request 写入 prefix tree 时使用的 key，包含 prompt+output token 和 extra_key 隔离域。",
+    "values": "写入 radix tree 的 KV slot index 副本；copy=True 避免后续 req pool 复用时污染 cache metadata。",
+    "python/sglang/srt/managers/schedule_policy.py:match_result": "prefix cache 返回的命中摘要，后续会展开到 `Req.prefix_indices/last_node/host_hit_length` 等字段。",
+    "self.policy": "调度策略在初始化时会根据 cache 类型做校正，避免选择当前 prefix cache 不支持的策略。",
+    "self.tree_cache": "SchedulePolicy 持有 prefix cache 引用，排序前会用它计算 waiting request 的 prefix hit。",
+    "self.priority_sign": "priority 排序方向由 `schedule_low_priority_values_first` 决定，统一成乘法符号供 sort key 使用。",
+    "self.waiting_queue_radix_tree": "模拟 radix tree 用于 in-batch prefix caching，估计 waiting queue 内部请求之间的共享前缀。",
+    "python/sglang/srt/managers/schedule_policy.py:policy": "本轮实际使用的排序策略，队列长度或 cache 能力可能让它不同于用户配置的 policy。",
+    "thinking_budget": "从请求参数中取出的 strict thinking token 预算；只有 reasoning grammar 会消费它。",
+    "add_to_grammar_queue": "标记该请求是否因为 grammar 编译未完成而暂缓进入 scheduler waiting queue。",
+    "python/sglang/srt/constrained/grammar_manager.py:key": "grammar cache key 由约束类型和约束内容组成，确保 JSON/regex/EBNF/structural_tag 的编译结果互不混用。",
+    "python/sglang/srt/constrained/grammar_manager.py:value, cache_hit": "grammar backend 返回 compiled grammar 或 Future；cache_hit 决定请求能否立即进入 waiting queue。",
+    "req.grammar": "Req 上的 grammar 字段会被 sampling 路径读取，用于每步填充并应用 token bitmask。",
+    "req.grammar_key": "保存 cache miss 时的 grammar key，Future 完成或失败后要用它回写 grammar backend cache。",
+    "ready_req_idxs": "本 rank 已完成 grammar 编译或已 abort 的 grammar_queue 索引集合。",
+    "failed_req_idxs": "本 rank 轮询超时的 grammar_queue 索引集合，后续会同步到所有 rank。",
+    "synced_ready_req_idxs": "多 rank 下取 ready 交集，保证所有 rank 都准备好同一批 grammar 请求后再放行。",
+    "synced_failed_req_idxs": "多 rank 下取 failed 并集，只要任一 rank 编译失败/超时，所有 rank 都按失败处理。",
+    "return_reqs": "从 grammar_queue 释放出来、准备重新进入 scheduler waiting queue 的请求列表。",
+    "self.matcher": "每个请求独享的 xgrammar matcher，记录当前 FSM 状态并生成下一 token mask。",
+    "self.accepted_tokens": "调试和 rollback 用的已接受 token 序列，matcher 拒绝 token 时用于错误上下文。",
+    "accepted": "xgrammar matcher 是否接受刚采样出的 token；False 表示约束状态和生成 token 不一致。",
+    "matcher": "copy 时重新创建 matcher，保证缓存中的初始 grammar object 不被某个请求的状态污染。",
+    "grammar_stats": "grammar cache hit 时复制统计对象并标记 `is_cache_hit=True`，用于 structured output metrics。",
+    "self.grammar_compiler": "xgrammar compiler 持有 tokenizer 边界信息，后续把 JSON/regex/EBNF 编译成 matcher 可执行对象。",
+    "self.vocab_size": "grammar bitmask 的词表宽度必须与模型 vocab size 一致。",
+    "self.override_stop_tokens": "xgrammar 使用模型 EOS/自定义 stop tokens，避免 grammar 终止语义和模型终止语义不一致。",
+    "self.any_whitespace": "xgrammar 编译 schema 时的 whitespace 策略，影响 JSON 等格式中空白 token 的可接受性。",
+    "self._enable_metrics_flag": "HiCache 是否采集 metrics 的总开关，来自 cache init params。",
+    "self.page_size": "HiCache 所有 L1/L2/L3 KV 操作都按 page 对齐，page_size 是 load-back/prefetch 的基本粒度。",
+    "self.kv_cache": "当前 GPU device KV pool；HiRadixCache 根据它的具体类型选择 host pool 布局。",
+    "self.token_to_kv_pool_host": "HiCache L2 host KV pool，保存从 device 写回或从 L3 预取的 KV page。",
+    "self.tp_group": "HiCache 传输和命中查询需要与 TP cache group 对齐，跨 rank 时按这个 group 同步。",
+    "self.attn_cp_group": "attention context-parallel cache group，用于 HiCache load-back/prefetch 的跨 rank 同步。",
+    "self.attn_tp_group": "attention tensor-parallel cache group，用于 HiCache storage 命中和预取一致性。",
+    "self.pp_group": "pipeline-parallel cache group，HiCache controller 需要它处理 PP 场景下的传输协调。",
+    "self.enable_storage": "是否启用 L3 storage backend；未配置时 HiCache 只提供 L1/L2。",
+    "self.enable_storage_metrics": "只有启用 L3 且 metrics 打开时才采集 storage 相关指标。",
+    "extra_config": "L3 storage backend 的解析后配置，会传给 HiCacheController 和 runtime config。",
+    "prefetch_threshold": "L3 命中 token 数低于该阈值时放弃预取，避免 I/O 成本超过收益。",
+    "prefetch_timeout_config": "L3 预取超时策略配置，用于判断 prefetch 是否应停止等待。",
+    "hicache_storage_pass_prefix_keys": "控制是否把 prefix keys 传给 storage backend，供部分 backend 做更精确的 key 查询。",
+    "self.is_prefetch_timeout": "当前使用的 prefetch 超时判断函数，默认是线性超时策略。",
+    "self.prefetch_stop_policy": "L3 预取停止策略，决定命中不足、超时或资源不足时如何撤销/截断。",
+    "self.load_cache_event": "load-back/prefetch 完成通知事件，controller 和 cache 主路径通过它协调异步传输。",
+    "self.cache_controller": "HiCache 异步传输控制器，负责 host pool 分配、device<->host copy、storage prefetch 和 ACK。",
+    "self.ongoing_write_through": "记录正在写穿到 host/storage 的 radix 节点，避免节点 mutation 与异步写回冲突。",
+    "self.ongoing_load_back": "记录正在从 host 加载回 device 的节点片段，避免重复 load-back 同一段 KV。",
+    "self.ongoing_prefetch": "按 request id 记录正在进行的 L3->host 预取，terminate/progress 需要这份账本。",
+    "self.ongoing_backup": "记录后台 backup 操作，防止驱逐或节点更新时丢失仍在传输的 KV。",
+    "self.prefetch_loaded_tokens_by_reqid": "按请求统计实际从 L3 加载的 token 数，用于 metrics 和后续调度判断。",
+    "self.work_list": "保存 torch distributed 异步 work 句柄，确保跨 rank HiCache 通信完成后再回收状态。",
+    "self.write_through_threshold": "write-through 策略下更积极地写回 host/storage，write-back 策略则用更高阈值减少传输。",
+    "self.load_back_threshold": "load-back 最小收益阈值，命中过短时不值得把 host KV 搬回 device。",
+    "self.rid": "请求全局 id，是 scheduler 输出回到 TokenizerManager `rid_to_state` 的路由键。",
+    "self.origin_input_ids": "原始 prompt token ids；prefix cache、长度校验和 prefill 都以它为基础。",
+    "self.origin_input_ids_unpadded": "多模态 padding 前的原始 token ids，用于需要还原用户输入长度的统计或返回。",
+    "self.output_ids": "生成阶段 append-only 的输出 token；scheduler 根据长度差推断新增 token，不能原地改写。",
+    "self.full_untruncated_fill_ids": "prompt+output 的完整序列镜像，chunked prefill/DLLM 等路径用它恢复 fill 状态。",
+    "self.fill_len": "当前已经进入 fill/prefill 处理的 token 长度，admission 不直接截断完整序列。",
+    "self.kv_committed_len": "已提交、语义上可保留的 KV 长度；finished/cache 路径只处理这部分 KV。",
+    "self.kv_allocated_len": "已经向 KV pool 申请的长度，可能大于 committed 长度，用于处理预分配和回收。",
+    "self.kv_committed_freed": "记录 committed KV 是否已释放，防止 abort/finish 多路径重复 free。",
+    "self.kv_overallocated_freed": "记录 overallocated KV 是否已释放，避免预分配槽位泄漏或重复释放。",
+    "reqs": "ScheduleBatch 中的请求列表；ForwardBatch 会从它派生 LoRA、grammar、position 等 per-request 元数据。",
+    "req_to_token_pool": "请求逻辑 token 位置到 KV slot 的映射池，batch 执行和 prefix cache 都会读取它。",
+    "token_to_kv_pool_allocator": "物理 KV slot allocator，负责为 extend/decode 分配或释放 KV 存储。",
+    "tree_cache": "batch 共享的 prefix cache 引用，finished/unfinished request 会通过它更新 radix cache。",
+    "batch_is_full": "标记 running batch 是否已满；为满时可跳过新 prefill 检查，减少 scheduler 热路径开销。",
+    "chunked_req": "当前被切块 prefill 的请求，下一轮会继续从它的后续 prompt token 开始。",
+    "decoding_reqs": "与 chunked-prefill batch 同时携带的 decode 请求，用于混合 prefill/decode 调度。",
+    "req_pool_indices_cpu": "req_pool_indices 的 CPU 镜像，overlap utils 使用；spec draft window 中可能滞后于 GPU tensor。",
+    "hicache_consumer_index": "HiCache load-back 与 batch 消费同步用的指针，避免 GPU 在 KV 搬回前读取。",
+    "input_ids": "传给 model runner 的本轮输入 token tensor，是 ScheduleBatch 到 ForwardBatch 的核心数据。",
+    "prefill_input_ids_cpu": "prefill H2D staging 区，resolve_forward_inputs 会消费它构造最终 GPU input_ids。",
+    "mix_running_indices": "混合 prefill/decode 时用于 gather running token 的索引，resolve_forward_inputs 会读取它。",
+    "forward_mode": "ForwardBatch 的执行模式，attention backend 依赖它区分 prefill/decode/verify/extend。",
+    "batch_size": "本次 forward 的请求数或执行行数，kernel launch 和 sampling batch 都依赖它。",
+    "req_pool_indices": "ForwardBatch 中每个请求在 req_to_token_pool 的行索引，attention backend 用它定位历史 KV。",
+    "seq_lens": "每个请求当前序列长度，paged attention 和 sampling 都依赖它计算有效上下文。",
+    "out_cache_loc": "本轮输出 token 要写入的 KV slot 位置，是 attention 写 KV 的目标地址。",
+    "seq_lens_sum": "batch 内总 token 长度，部分 attention backend 用它规划 prefill kernel。",
+    "orig_seq_lens": "chunked prefill 前的原始长度，长上下文模型和日志统计需要保留它。",
+    "return_logprob": "是否需要返回 logprob；为 True 时 model runner/sampling 会保留额外概率信息。",
+    "is_prefill_only": "该 batch 只做 prefill 不采样生成 token，常见于 embedding 或预填充分离路径。",
+    "spec_algorithm": "当前 batch 使用的 speculative algorithm，决定 verify/draft worker 和 accept 逻辑。",
+    "is_extend_in_batch": "batch 中存在 extend/prefill 请求，attention backend 需要按 extend 而非纯 decode 处理。",
+    "batch.forward_iter": "把 scheduler 全局 forward 计数写入 batch，metrics/profile 可用它关联一次 GPU 执行。",
+    "future_indices": "overlap/speculative 发布用的 req_pool_indices 快照，worker 执行期间 scheduler 依赖它更新 future_map。",
+    "fwd_kwargs": "speculative overlap 时传给 model worker 的 publish hook；非 spec batch 不需要额外 kwargs。",
+    "batch_result": "model worker 返回的生成结果，后续 scheduler 会据此更新 token、finish reason、KV cache 和回包。",
 }
 
 
@@ -132,57 +403,35 @@ def _comment_marker(line: str) -> str:
     return "//" if line.lstrip().startswith("//") else "#"
 
 
-def _annotation_for_assignment(left: str, right: str) -> str:
+def _scoped_explanation(
+    table: dict[str, str], key: str, path: str, lineno: int
+) -> str | None:
+    scoped_key = f"{path}:{lineno}:{key}"
+    if scoped_key in table:
+        return table[scoped_key]
+    scoped_key = f"{path}:{key}"
+    if scoped_key in table:
+        return table[scoped_key]
+    return table.get(key)
+
+
+def _annotation_for_assignment(left: str, right: str, path: str, lineno: int) -> str | None:
     left = left.strip()
     right = right.strip()
     bare_left = left.split(":", 1)[0].strip()
-    lower_left = bare_left.lower()
-    lower_right = right.lower()
-
-    if bare_left.startswith("self."):
-        attr = bare_left.split(".", 1)[1]
-        if "args" in lower_left:
-            return f"成员变量写入：`{bare_left}` 保存启动/请求配置，后续方法会以它决定分支行为。"
-        if "manager" in lower_left:
-            return f"成员变量写入：`{bare_left}` 保存 manager 引用，是跨组件调用的入口。"
-        if "queue" in lower_left:
-            return f"成员变量写入：`{bare_left}` 保存队列状态，后续 event loop 会持续消费或填充它。"
-        if "pool" in lower_left or "cache" in lower_left:
-            return f"成员变量写入：`{bare_left}` 保存缓存/内存池资源，生命周期会跨越多个请求。"
-        if "token" in lower_left or "ids" in lower_left:
-            return f"成员变量写入：`{bare_left}` 保存 token 相关状态，后续长度计算、cache key 或采样都会读取它。"
-        if "lock" in lower_left:
-            return f"成员变量写入：`{bare_left}` 保存并发保护对象，避免请求处理和后台更新互相踩状态。"
-        if "event" in lower_left:
-            return f"成员变量写入：`{bare_left}` 保存同步事件，用来把后台结果通知等待中的请求路径。"
-        return f"成员变量写入：`{bare_left}` 会留在对象生命周期中，后续方法可能依赖这份状态。"
-
-    if bare_left.startswith(("app.", "req.", "state.", "node.", "server_args.")):
-        owner = bare_left.split(".", 1)[0]
-        return f"对象状态写入：`{bare_left}` 修改 `{owner}` 的可见状态，读源码时要继续追踪它在哪里被消费。"
-
-    if lower_left in {"logger", "log"}:
-        return "局部状态绑定：创建模块 logger，后续只负责日志输出，不改变请求执行语义。"
-    if "args" in lower_left or "config" in lower_left:
-        return f"局部状态绑定：`{bare_left}` 保存配置快照，下面的分支通常会基于它选择执行路径。"
-    if ":" in left and not bare_left.startswith(("lambda", "for ")):
-        return f"字段/变量声明：`{bare_left}` 带有类型信息；它描述这个对象或阶段会保存的状态形状。"
-    if "socket" in lower_left or "port" in lower_left:
-        return f"局部状态绑定：`{bare_left}` 保存通信端点，后续 manager 间 IPC 会使用它。"
-    if "future" in lower_left or "task" in lower_left:
-        return f"局部状态绑定：`{bare_left}` 保存异步任务句柄，后续会检查完成、取消或取结果。"
-    if "mask" in lower_left or "bitmask" in lower_left:
-        return f"局部状态绑定：`{bare_left}` 保存 mask 数据，后续会用于 logits 过滤或状态筛选。"
-    if "indices" in lower_left or "loc" in lower_left:
-        return f"局部状态绑定：`{bare_left}` 保存位置/索引映射，通常会连接请求逻辑 token 与 KV 物理槽位。"
-    if "req" in lower_left or "batch" in lower_left:
-        return f"局部状态绑定：`{bare_left}` 保存请求或 batch 状态，后续调度/执行会继续改写它。"
-    if any(name in lower_right for name in CALL_EXPLANATIONS):
-        return f"局部状态绑定：`{bare_left}` 接住关键调用结果，后续代码会基于它继续装配组件或推进请求。"
-    return f"局部状态绑定：`{bare_left}` 保存本阶段的中间结果，后续几行通常会立即消费它。"
+    explanation = _scoped_explanation(ASSIGNMENT_EXPLANATIONS, bare_left, path, lineno)
+    if explanation:
+        return explanation
+    if any(name in right for name in CALL_EXPLANATIONS):
+        for name, explanation in sorted(
+            CALL_EXPLANATIONS.items(), key=lambda item: len(item[0]), reverse=True
+        ):
+            if name in right:
+                return f"`{bare_left}` 接收 `{name}` 的结果：{explanation}"
+    return None
 
 
-def _annotation_for_source_line(line: str) -> str | None:
+def _annotation_for_source_line(path: str, lineno: int, line: str) -> str | None:
     stripped = line.strip()
     if not stripped or stripped.startswith("#") or stripped.startswith(('"""', "'''")):
         return None
@@ -196,77 +445,36 @@ def _annotation_for_source_line(line: str) -> str | None:
         # the real meaning.
         return None
     if stripped.startswith("__slots__"):
-        return "成员变量声明：`__slots__` 限定实例可保存的字段，读这个类时可先把这些字段当作对象状态地图。"
-    if stripped.startswith("class "):
-        name = stripped.split("(", 1)[0].replace("class", "", 1).strip().rstrip(":")
-        return f"类定义：`{name}` 是这一段的状态/行为边界；先看字段，再看哪些方法会改字段。"
-    if stripped.startswith(("def ", "async def ")):
-        name = stripped.split("(", 1)[0].replace("async def", "").replace("def", "").strip()
-        prefix = "异步函数定义" if stripped.startswith("async def ") else "函数定义"
-        return f"{prefix}：`{name}` 是调用边界；参数决定它从上游接收哪些状态，返回值决定下游能看到什么。"
-    if stripped.startswith("return "):
-        return "返回出口：把本阶段整理出的状态交给调用方；读调用链时要回到上层看它如何被消费。"
-    if stripped == "return":
-        return "返回出口：提前结束当前路径，通常表示这个分支已经完成处理或无需继续推进。"
-    if stripped.startswith("yield "):
-        return "流式产出：把一个中间结果交给上游迭代器，函数状态会在下一次迭代时继续。"
-    if stripped.startswith(("continue", "break")):
-        return "循环控制：跳过或结束当前循环轮次，通常代表这个请求/节点已被当前分支处理完。"
+        return "`RadixKey` 用 `__slots__` 固定 token_ids/extra_key/is_bigram/limit，减少 prefix-cache 热路径对象开销。"
     if stripped.startswith("if "):
         condition = stripped[3:].rstrip(":")
         if condition == "TYPE_CHECKING":
             return "类型检查分支：只给静态类型工具导入重依赖，运行时不会进入这条路径。"
-        if condition == "(":
-            return "多行分支开始：完整条件在接下来几行，通常用于组合多个请求参数或运行时状态。"
-        if "server_args" in condition:
-            return f"分支判断：根据启动参数 `{condition}` 选择服务拓扑、通信方式或功能开关。"
-        if "sampling_params" in condition or "grammar" in condition:
-            return f"分支判断：根据请求的采样/grammar 约束 `{condition}` 决定是否进入受限解码路径。"
-        if "req" in condition or "batch" in condition:
-            return f"分支判断：根据请求/batch 状态 `{condition}` 决定调度、执行或回包路径。"
-        if "cache" in condition or "pool" in condition or "memory" in condition:
-            return f"分支判断：根据缓存/内存资源 `{condition}` 决定是否复用、加载、驱逐或降级。"
-        return f"分支判断：只有满足 `{condition}` 时才进入该路径；这通常是在区分部署模式、请求类型或资源状态。"
+        return _scoped_explanation(BRANCH_EXPLANATIONS, condition, path, lineno)
     if stripped.startswith("elif "):
         condition = stripped[5:].rstrip(":")
-        if "server_args" in condition:
-            return f"补充分支：前面的启动模式不匹配时，再按 `{condition}` 选择另一种服务拓扑。"
-        if "cache" in condition or "pool" in condition:
-            return f"补充分支：前面的缓存/资源条件不满足时，再检查 `{condition}` 对应的降级或替代路径。"
-        return f"补充分支：前面的条件不满足时，再检查 `{condition}`。"
-    if stripped.startswith("else:"):
-        return "兜底分支：前面的 if/elif 都不成立时进入，常代表默认模式或降级路径。"
-    if stripped.startswith("try:"):
-        return "异常边界：下面的调用可能跨进程、I/O 或用户输入，失败时需要清理内部状态。"
-    if stripped.startswith("except "):
-        return "异常处理分支：把失败转换成可控清理、缓存失败对象或用户可见错误。"
-    if stripped.startswith("for "):
-        return "循环处理：通常是在遍历请求、rank、worker、token 或候选项。"
-    if stripped.startswith("while "):
-        return "循环等待/轮询：注意退出条件，否则容易造成 busy wait 或阻塞。"
+        return _scoped_explanation(BRANCH_EXPLANATIONS, condition, path, lineno)
+    if stripped.startswith(("else:", "try:", "except ", "for ", "while ")):
+        return None
 
     if re.match(r"^[A-Za-z_][\w\.]*\s*:\s*[^=]+$", stripped):
         name = stripped.split(":", 1)[0].strip()
-        return f"字段/变量声明：`{name}` 带有类型信息；它描述这个对象或阶段会保存的状态形状。"
+        return _scoped_explanation(ASSIGNMENT_EXPLANATIONS, name, path, lineno)
 
     if _is_assignment(stripped):
         left, right = stripped.split("=", 1)
-        return _annotation_for_assignment(left, right)
+        return _annotation_for_assignment(left, right, path, lineno)
 
-    for name, explanation in CALL_EXPLANATIONS.items():
+    for name, explanation in sorted(
+        CALL_EXPLANATIONS.items(), key=lambda item: len(item[0]), reverse=True
+    ):
         if name in stripped:
             return f"关键调用：`{name}` - {explanation}"
 
     call_match = re.search(r"([A-Za-z_][\w\.]*?)\(", stripped)
     if call_match and not stripped.startswith(("def ", "class ")):
         name = call_match.group(1)
-        if name in {"print", "len", "range", "isinstance", "getattr", "setattr", "list", "dict", "tuple", "set"}:
-            return None
-        if name.startswith("self."):
-            return f"成员函数调用：`{name}` 会读取或更新当前对象状态，建议继续查看该方法定义。"
-        if "." in name:
-            return f"对象/库方法调用：`{name}` 把当前对象状态交给另一个组件处理，建议追踪该对象的生命周期。"
-        return f"函数/库调用：`{name}` 把当前阶段委托给外部 helper 或库实现。"
+        return CALL_EXPLANATIONS.get(name)
     return None
 
 
@@ -281,7 +489,7 @@ def source_block(path: str, start: int, end: int, lang: str = "python") -> str:
     for lineno in range(start, min(end, len(lines)) + 1):
         line = lines[lineno - 1]
         rendered.append(f"{lineno:4d}: {line}")
-        annotation = _annotation_for_source_line(line)
+        annotation = _annotation_for_source_line(path, lineno, line)
         if annotation:
             marker = _comment_marker(line)
             rendered.append(f"      {marker} 注：{annotation}")
